@@ -1,0 +1,581 @@
+import test from 'ava';
+import { Parser } from '../src/parser.ts';
+import { loadFixture } from './helpers/test-utils.ts';
+
+test('parser identifies schema objects correctly', (t) => {
+  const parser = new Parser();
+  const sql = `CREATE SCHEMA myschema1;
+CREATE SCHEMA myschema2 AUTHORIZATION joe;
+CREATE SCHEMA "my;schema";`;
+
+  const result = parser.parse(sql);
+
+  t.is(result.objects.length, 3);
+  t.true(result.objects.every((object) => object.type === 'schema'));
+  t.is(result.objects[0].schema, 'myschema1');
+  t.is(result.objects[0].name, 'myschema1');
+  t.is(result.objects[1].schema, 'myschema2');
+  t.is(result.objects[1].definition, 'CREATE SCHEMA myschema2 AUTHORIZATION joe;');
+  t.is(result.objects[2].schema, '"my;schema"');
+  t.is(result.objects[2].definition, 'CREATE SCHEMA "my;schema";');
+});
+
+test('parser identifies extension objects correctly', (t) => {
+  const parser = new Parser();
+  const sql = `CREATE EXTENSION ext1;
+CREATE EXTENSION ext2;
+CREATE EXTENSION ext3 WITH SCHEMA myschema1;
+CREATE EXTENSION ext4 SCHEMA myschema2;
+CREATE EXTENSION IF NOT EXISTS postgis;
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA extensions;`;
+
+  const result = parser.parse(sql);
+
+  t.is(result.objects.length, 6);
+  t.true(result.objects.every((object) => object.type === 'extension'));
+  t.is(result.objects[0].schema, 'public');
+  t.is(result.objects[0].name, 'ext1');
+  t.is(result.objects[0].definition, 'CREATE EXTENSION ext1;');
+  t.is(result.objects[1].schema, 'public');
+  t.is(result.objects[1].name, 'ext2');
+  t.is(result.objects[2].schema, 'myschema1');
+  t.is(result.objects[2].name, 'ext3');
+  t.is(result.objects[2].definition, 'CREATE EXTENSION ext3 WITH SCHEMA myschema1;');
+  t.is(result.objects[3].schema, 'myschema2');
+  t.is(result.objects[3].name, 'ext4');
+  t.is(result.objects[4].schema, 'public');
+  t.is(result.objects[4].name, 'postgis');
+  t.is(result.objects[5].schema, 'extensions');
+  t.is(result.objects[5].name, '"uuid-ossp"');
+});
+
+test('parser identifies type objects correctly', (t) => {
+  const parser = new Parser();
+  const sql = `CREATE TYPE public.status AS ENUM (
+    'active',
+    'inactive'
+);`;
+
+  const result = parser.parse(sql);
+
+  t.is(result.objects.length, 1);
+  t.is(result.objects[0].type, 'type');
+  t.is(result.objects[0].schema, 'public');
+  t.is(result.objects[0].name, 'status');
+});
+
+test('parser identifies domain objects correctly', (t) => {
+  const parser = new Parser();
+  const sql = `CREATE DOMAIN myschema.us_postal_code AS TEXT
+CHECK(
+   VALUE ~ '^\\d{5}$'
+   OR VALUE ~ '^\\d{5}-\\d{4}$'
+);`;
+
+  const result = parser.parse(sql);
+
+  t.is(result.objects.length, 1);
+  t.is(result.objects[0].type, 'domain');
+  t.is(result.objects[0].schema, 'myschema');
+  t.is(result.objects[0].name, 'us_postal_code');
+});
+
+test('parser identifies function objects correctly', (t) => {
+  const parser = new Parser();
+  const sql = `CREATE FUNCTION public.prefix_string(string text) RETURNS text
+    LANGUAGE plpgsql
+    AS $$
+DECLARE c_prefix CONSTANT text := 'p_';
+BEGIN
+    RETURN concat(c_prefix, string);
+END;
+$$;
+CREATE FUNCTION myschema.test_func(param text) RETURNS text
+    LANGUAGE plpgsql IMMUTABLE
+    AS $__$
+BEGIN
+    RETURN param;
+END;
+$__$;`;
+
+  const result = parser.parse(sql);
+
+  t.is(result.objects.length, 2);
+  t.true(result.objects.every((object) => object.type === 'function'));
+  t.is(result.objects[0].schema, 'public');
+  t.is(result.objects[0].name, 'prefix_string');
+  t.true(result.objects[0].definition.includes('CREATE FUNCTION public.prefix_string'));
+  t.is(result.objects[1].schema, 'myschema');
+  t.is(result.objects[1].name, 'test_func');
+  t.true(result.objects[1].definition.includes('CREATE FUNCTION myschema.test_func'));
+});
+
+test('parser identifies procedure objects correctly', (t) => {
+  const parser = new Parser();
+  const sql = `CREATE PROCEDURE public.test_proc(param text)
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    RAISE NOTICE 'Hello %', param;
+END;
+$$;`;
+
+  const result = parser.parse(sql);
+
+  t.is(result.objects.length, 1);
+  t.is(result.objects[0].type, 'procedure');
+  t.is(result.objects[0].schema, 'public');
+  t.is(result.objects[0].name, 'test_proc');
+});
+
+test('parser identifies table objects correctly', (t) => {
+  const parser = new Parser();
+  const sql = `CREATE TABLE public.users (
+    id integer NOT NULL,
+    name text
+);`;
+
+  const result = parser.parse(sql);
+
+  t.is(result.objects.length, 1);
+  t.is(result.objects[0].type, 'table');
+  t.is(result.objects[0].schema, 'public');
+  t.is(result.objects[0].name, 'users');
+});
+
+test('parser identifies and attaches sequences to tables', (t) => {
+  const parser = new Parser();
+  const sql = `CREATE TABLE public.users (
+    id integer NOT NULL,
+    name text
+);
+
+CREATE TABLE myschema.products (
+    product_id integer NOT NULL,
+    aux_product_id integer NULL,
+    name varchar(100)
+);
+
+ALTER TABLE public.users ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.users_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+ALTER TABLE ONLY myschema.products ALTER product_id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME myschema.products_product_id_seq
+    START WITH 100
+    INCREMENT BY 5
+);
+
+ALTER TABLE ONLY myschema.products ALTER aux_product_id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME myschema.products_product_id_seq
+    START WITH 9
+    INCREMENT BY 3
+);
+`;
+
+  const result = parser.parse(sql);
+
+  t.is(result.objects.length, 2);
+  t.true(result.objects.every((object) => object.type === 'table'));
+  t.is(result.objects[0].sequences?.length, 1);
+
+  let tableDef = result.objects[0].definition;
+  t.regex(tableDef, /id integer GENERATED BY DEFAULT AS IDENTITY[^\n}]+ NOT NULL,\n/);
+  t.true(tableDef.includes('SEQUENCE NAME public.users_id_seq'));
+
+  tableDef = result.objects[1].definition;
+  t.regex(tableDef, /product_id integer GENERATED ALWAYS AS IDENTITY[^\n}]+ NOT NULL,\n/);
+  t.regex(tableDef, /aux_product_id integer GENERATED ALWAYS AS IDENTITY[^\n}]+ NULL,\n/);
+  t.is(result.objects[1].sequences?.length, 2);
+});
+
+test('parser skips sequence attachment for malformed table definitions', (t) => {
+  const parser = new Parser();
+  const sql = `CREATE TABLE public.broken (
+    id integer NOT NULL
+;
+ALTER TABLE public.broken ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.broken_id_seq
+);
+`;
+
+  const result = parser.parse(sql);
+
+  t.is(result.objects.length, 1);
+  const table = result.objects[0];
+
+  t.is(table.type, 'table');
+  t.false(table.definition.includes('SEQUENCE NAME public.broken_id_seq'));
+});
+
+test('parser identifies view objects correctly', (t) => {
+  const parser = new Parser();
+  const sql = `CREATE VIEW public.active_users AS
+     SELECT id, name FROM users WHERE active = true;
+
+CREATE RECURSIVE VIEW public.nums_1_100 (n) AS
+    VALUES (1)
+UNION ALL
+    SELECT n+1 FROM nums_1_100 WHERE n < 100;
+
+CREATE MATERIALIZED VIEW public.active_users_mat AS
+    SELECT id, name FROM users WHERE active = true;
+ `;
+
+  const result = parser.parse(sql);
+
+  t.is(result.objects.length, 3);
+  t.true(result.objects.every((object) => object.type === 'view'));
+  t.is(result.objects[0].schema, 'public');
+  t.is(result.objects[0].name, 'active_users');
+  t.is(result.objects[1].name, 'nums_1_100');
+  t.is(result.objects[2].name, 'active_users_mat');
+});
+
+test('parser handles dollar quoting correctly', (t) => {
+  const parser = new Parser();
+  const sql = `CREATE FUNCTION public.test() RETURNS text AS $$
+BEGIN
+    RETURN 'test;semicolon;inside';
+END;
+$$ LANGUAGE plpgsql;`;
+
+  const result = parser.parse(sql);
+
+  t.is(result.objects.length, 1);
+  t.true(result.objects[0].definition.includes('test;semicolon;inside'));
+});
+
+test('parser handles named dollar quotes', (t) => {
+  const parser = new Parser();
+  const sql = `CREATE FUNCTION public.test() RETURNS text AS $BODY$
+BEGIN
+    RETURN 'content with $$ inside';
+END;
+$BODY$ LANGUAGE plpgsql;`;
+
+  const result = parser.parse(sql);
+
+  t.is(result.objects.length, 1);
+  t.true(result.objects[0].definition.includes('content with $$ inside'));
+});
+
+test('parser handles nested dollar quotes', (t) => {
+  const parser = new Parser();
+  const complexSql = loadFixture('complex-functions.sql');
+
+  const result = parser.parse(complexSql);
+
+  t.is(result.objects.length, 3);
+
+  // Check that nested dollar quotes are preserved
+  const nestedFunc = result.objects.find((obj) => obj.name === 'nested_dollar_quotes');
+  t.truthy(nestedFunc);
+  t.true(nestedFunc?.definition.includes('$inner$'));
+  t.true(nestedFunc?.definition.includes('$body$'));
+  t.true(nestedFunc?.definition.includes('$fmt$'));
+});
+
+test('parser extracts and attaches constraints', (t) => {
+  const parser = new Parser();
+  const sql = `CREATE TABLE public.users (
+    id integer NOT NULL,
+    email text,
+    role_id int,
+    notes text
+);
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_email_key UNIQUE (email);
+    
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT "fk;users_roles" FOREIGN KEY (role_id) REFERENCES roles(id);
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_notes CHECK (notes NOT LIKE '%;%');`;
+
+  const result = parser.parse(sql);
+
+  t.is(result.objects.length, 1);
+  t.is(result.objects[0].type, 'table');
+
+  t.true(result.objects[0].definition.includes('CONSTRAINT users_pkey PRIMARY KEY (id)'));
+  t.true(result.objects[0].definition.includes('CONSTRAINT users_email_key UNIQUE (email)'));
+  t.true(result.objects[0].definition.includes(
+    'CONSTRAINT "fk;users_roles" FOREIGN KEY (role_id) REFERENCES roles(id)'
+  ));
+  t.true(result.objects[0].definition.includes(
+    'CONSTRAINT users_notes CHECK (notes NOT LIKE \'%;%\'')
+  );
+
+  t.is(result.objects[0].constraints?.length, 4);
+});
+
+test('parser extracts and attaches indexes', (t) => {
+  const parser = new Parser();
+  const sql = `CREATE TABLE public.users (
+    id integer NOT NULL,
+    username text
+);
+
+CREATE TABLE public.posts (
+    id integer,
+    title text
+);
+
+CREATE INDEX ON public.posts (title);
+CREATE UNIQUE INDEX ON public.posts (id);
+
+CREATE INDEX idx_users_username ON public.users USING btree (username);
+CREATE UNIQUE INDEX idx_users_id ON public.users USING btree (id);`;
+
+  const result = parser.parse(sql);
+
+  t.is(result.objects.length, 2);
+  t.true(result.objects.every((object) => object.type === 'table'));
+
+  t.is(result.objects[0].indexes?.length, 2);
+  t.true(result.objects[0].definition.includes('CREATE INDEX idx_users_username'));
+  t.true(result.objects[0].definition.includes('CREATE UNIQUE INDEX idx_users_id'));
+
+  t.is(result.objects[1].indexes?.length, 2);
+  t.true(result.objects[1].definition.includes('CREATE INDEX ON public.posts (title)'));
+  t.true(result.objects[1].definition.includes('CREATE UNIQUE INDEX ON public.posts (id)'));
+
+});
+
+test('parser handles SET statements as remainder', (t) => {
+  const parser = new Parser();
+  const sql = `SET statement_timeout = 0;
+SET lock_timeout = 0;
+SET client_encoding = 'UTF8';
+
+CREATE TABLE public.test (id integer);`;
+
+  const result = parser.parse(sql);
+
+  t.is(result.objects.length, 1);
+  t.true(result.residual.includes('SET statement_timeout = 0'));
+  t.true(result.residual.includes('SET lock_timeout = 0'));
+  t.true(result.residual.includes('SET client_encoding = \'UTF8\''));
+});
+
+test('parser handles comments as residual', (t) => {
+  const parser = new Parser();
+  const sql = `-- This is a comment
+-- Another comment
+
+CREATE TABLE public.test (id integer);
+
+-- Final comment`;
+
+  const result = parser.parse(sql);
+
+  t.is(result.objects.length, 1);
+  t.true(result.residual.includes('-- This is a comment'));
+  t.true(result.residual.includes('-- Another comment'));
+  t.true(result.residual.includes('-- Final comment'));
+});
+
+test('parser processes complete sample dump correctly', (t) => {
+  const parser = new Parser();
+  const sampleDump = loadFixture('sample-dump.sql');
+
+  const result = parser.parse(sampleDump);
+
+  // Should have 1 function, 1 table, 1 type, 1 view
+  t.is(result.objects.length, 4);
+
+  const objectTypes = result.objects.map((obj) => obj.type).sort();
+  t.deepEqual(objectTypes, ['function', 'table', 'type', 'view']);
+
+  // Check that table has constraints and indexes
+  const table = result.objects.find((obj) => obj.type === 'table');
+  t.truthy(table);
+  t.is(table?.constraints?.length, 2);
+  t.is(table?.indexes?.length, 1);
+
+  // Check residual contains SET statements
+  t.true(result.residual.includes('SET statement_timeout = 0'));
+});
+
+test('parser handles schema-qualified names', (t) => {
+  const parser = new Parser();
+  const sql = `CREATE TABLE myschema.users (id integer);
+CREATE FUNCTION myschema.test_func() RETURNS void AS $$ BEGIN END; $$ LANGUAGE plpgsql;`;
+
+  const result = parser.parse(sql);
+
+  t.is(result.objects.length, 2);
+
+  const table = result.objects.find((obj) => obj.type === 'table');
+  const func = result.objects.find((obj) => obj.type === 'function');
+
+  t.is(table?.schema, 'myschema');
+  t.is(table?.name, 'users');
+  t.is(func?.schema, 'myschema');
+  t.is(func?.name, 'test_func');
+});
+
+test('parser defaults to public schema when not specified', (t) => {
+  const parser = new Parser();
+  const sql = 'CREATE TABLE users (id integer);';
+
+  const result = parser.parse(sql);
+
+  t.is(result.objects.length, 1);
+  t.is(result.objects[0].schema, 'public');
+  t.is(result.objects[0].name, 'users');
+});
+
+test('parser handles atypical identifiers', (t) => {
+  const parser = new Parser();
+  const sql = `CREATE TABLE "my""special""table" (
+    "column""with""quotes" text
+);
+CREATE DOMAIN "my""domain" AS text;
+
+CREATE TABLE público.usuários (
+    id integer,
+    名前 text,
+    электронная_почта varchar(255)
+);
+
+CREATE FUNCTION public.test$function() RETURNS void AS $$ BEGIN END; $$ LANGUAGE plpgsql;
+CREATE TABLE public.data$table (
+    col$1 integer,
+    col$2 text
+);`;
+
+  const result = parser.parse(sql);
+
+  t.is(result.objects.length, 5);
+  t.is(result.objects[0].name, '"my""special""table"');
+  t.is(result.objects[1].name, '"my""domain"');
+
+  t.is(result.objects[2].schema, 'público');
+  t.is(result.objects[2].name, 'usuários');
+  t.true(result.objects[2].definition.includes('名前'));
+  t.true(result.objects[2].definition.includes('электронная_почта'));
+
+  t.is(result.objects[3].name, 'test$function');
+  t.is(result.objects[4].name, 'data$table');
+
+});
+
+test('parser handles unclosed dollar quotes gracefully', (t) => {
+  const parser = new Parser();
+  const sql = `CREATE FUNCTION public.broken() RETURNS text AS $$
+BEGIN
+    RETURN 'unclosed quote;`;
+
+  const result = parser.parse(sql);
+
+  // Should still parse the function even with unclosed dollar quote
+  t.is(result.objects.length, 1);
+  t.is(result.objects[0].type, 'function');
+  t.is(result.objects[0].name, 'broken');
+});
+
+test('parser handles nested block comments', (t) => {
+  const parser = new Parser();
+  const sql = `/* Outer comment /* nested comment */ still in outer */ 
+CREATE TABLE public.test (id integer);
+/* Another /* nested /* deeply */ nested */ comment */`;
+
+  const result = parser.parse(sql);
+
+  t.is(result.objects.length, 1);
+  t.is(result.objects[0].name, 'test');
+  // Comments should be in residual
+  t.true(result.residual.includes('/* Outer comment'));
+  t.true(result.residual.includes('/* Another'));
+});
+
+test('parser handles mixed comment types', (t) => {
+  const parser = new Parser();
+  const sql = `-- Line comment with /* block comment syntax inside
+/* Block comment with -- dash comment inside */
+CREATE TABLE public.test (
+    id integer, -- inline comment
+    /* inline block */ name text
+);`;
+
+  const result = parser.parse(sql);
+
+  t.is(result.objects.length, 1);
+  t.true(result.objects[0].definition.includes('-- inline comment'));
+  t.true(result.objects[0].definition.includes('/* inline block */'));
+});
+
+test('parser handles escaped quotes in strings', (t) => {
+  const parser = new Parser();
+  const sql = `CREATE FUNCTION public.test() RETURNS text AS $$
+BEGIN
+    RETURN 'It''s a string with '' escaped quotes';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE DOMAIN public.status AS text CHECK (VALUE IN ('active', 'in''active'));`;
+
+  const result = parser.parse(sql);
+
+  t.is(result.objects.length, 2);
+  t.true(result.objects[0].definition.includes("'It''s a string with '' escaped quotes'"));
+  t.true(result.objects[1].definition.includes("'in''active'"));
+});
+
+test('parser handles residual content before object statements', (t) => {
+  const parser = new Parser();
+  const sql = `-- Some random text before;
+-- Another line;
+CREATE TABLE public.test (id integer);
+--More residual after;`;
+
+  const result = parser.parse(sql);
+
+  t.is(result.objects.length, 1);
+  t.true(result.residual.includes('-- Some random text before'));
+  t.true(result.residual.includes('-- Another line'));
+  t.true(result.residual.includes('--More residual after'));
+});
+
+test('parser handles complex column definitions with commas', (t) => {
+  const parser = new Parser();
+  const sql = `CREATE TABLE public.complex (
+    id integer DEFAULT nextval('seq'::regclass),
+    data numeric(10,2) DEFAULT 0.0,
+    tags text[] DEFAULT ARRAY['tag1', 'tag2'],
+    config jsonb DEFAULT '{"key": "value", "list": [1,2,3]}'::jsonb
+);`;
+
+  const result = parser.parse(sql);
+
+  t.is(result.objects.length, 1);
+  // Ensure column definitions with commas inside are parsed correctly
+  t.true(result.objects[0].definition.includes('numeric(10,2)'));
+  t.true(result.objects[0].definition.includes("ARRAY['tag1', 'tag2']"));
+  t.true(result.objects[0].definition.includes('[1,2,3]'));
+});
+
+test('parser handles empty/whitespace input', (t) => {
+  const parser = new Parser();
+
+  let result = parser.parse('');
+
+  t.is(result.objects.length, 0);
+  t.is(result.residual, '');
+
+  result = parser.parse( '   \n\t\n   ');
+
+  t.is(result.objects.length, 0);
+  t.is(result.residual, '');
+});

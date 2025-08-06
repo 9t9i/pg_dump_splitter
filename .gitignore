@@ -1,0 +1,39 @@
+# Environment variables
+.env
+.env.local
+
+# ESLint cache
+.eslintcache
+
+# Logs
+npm-debug.log*
+*.log
+
+# npm cache
+.npm
+
+# IDE
+.vscode/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Agent context
+AGENT.md
+CLAUDE.md
+CLAUDE.local.md
+GEMINI.md
+
+# Dependencies
+node_modules/
+
+# Coverage
+coverage/
+
+# pg_dump_splitter default output
+output/
+
+# Temporary files
+tmp/
+temp/

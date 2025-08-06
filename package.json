@@ -1,0 +1,22 @@
+{
+  "name": "pg_dump_splitter",
+  "version": "1.0.0",
+  "description": "PostgreSQL schema dump splitter",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.ts",
+    "test": "ava",
+    "test:watch": "ava --watch",
+    "test:coverage": "c8 ava",
+    "test:debug": "ava --verbose --serial"
+  },
+  "devDependencies": {
+    "@stylistic/eslint-plugin": "^4.4.1",
+    "@types/node": "^24.1.0",
+    "ava": "^6.4.1",
+    "c8": "^10.1.3",
+    "eslint": "^9.31.0",
+    "eslint-plugin-n": "^17.21.0",
+    "typescript-eslint": "^8.38.0"
+  }
+}
