@@ -172,7 +172,7 @@ ALTER TABLE ONLY myschema.products ALTER product_id ADD GENERATED ALWAYS AS IDEN
 );
 
 ALTER TABLE ONLY myschema.products ALTER aux_product_id ADD GENERATED ALWAYS AS IDENTITY (
-    SEQUENCE NAME myschema.products_product_id_seq
+    SEQUENCE NAME my_otherschema.products_product_id_seq -- different schema to table
     START WITH 9
     INCREMENT BY 3
 );

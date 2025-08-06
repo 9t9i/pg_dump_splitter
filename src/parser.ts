@@ -188,7 +188,7 @@ class SequenceParser extends BaseParser {
       schema,
       name,
       qualifiedName: makeQualifiedName(schema, name),
-      tableSchema: match[1] ?? DEFAULT_SCHEMA,
+      tableSchema: match[1] ?? DEFAULT_SCHEMA, // the table schema may vary from the sequence schema
       table: match[2],
       column: match[3],
       ...this.extractDefinition(match, statement),
@@ -475,7 +475,10 @@ export class Parser {
   ): AttachablesByTable {
     return attachableStatements.reduce(
       (acc, statement) => {
-        const qualifiedTable = makeQualifiedName(statement.schema, statement.table);
+        const qualifiedTable = makeQualifiedName(
+          'tableSchema' in statement ? statement.tableSchema : statement.schema,
+          statement.table
+        );
 
         if (!acc[qualifiedTable]) {
           acc[qualifiedTable] = { sequences: [], constraints: [], indexes: [] };
